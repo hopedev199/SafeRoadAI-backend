@@ -1,3 +1,5 @@
+import math
+
 from flask import Flask, jsonify, request
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, Incident, User
@@ -11,6 +13,15 @@ db.init_app(app)
 
 with app.app_context():
     db.create_all()
+
+def distance_km(lat1, lon1, lat2, lon2):
+    """
+    Approximate distance in kilometers.
+    """
+    return math.sqrt(
+        (lat1 - lat2) ** 2 +
+        (lon1 - lon2) ** 2
+    ) * 111
 
 @app.route("/")
 def home():
@@ -48,6 +59,34 @@ def incidents():
     all_incidents = Incident.query.all()
 
     return jsonify([i.to_dict() for i in all_incidents])
+
+@app.route("/nearby")
+def nearby():
+
+    try:
+        lat = float(request.args.get("lat"))
+        lon = float(request.args.get("lon"))
+        radius = float(request.args.get("radius", 2))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid or missing lat/lon"}), 400
+
+    nearby_incidents = []
+
+    for incident in Incident.query.all():
+        d = distance_km(
+            lat,
+            lon,
+            incident.latitude,
+            incident.longitude
+        )
+
+        if d <= radius:
+            item = incident.to_dict()
+            item["distance_km"] = round(d, 2)
+            nearby_incidents.append(item)
+
+    return jsonify(nearby_incidents)
+
 
 @app.route("/register", methods=["POST"])
 def register():
