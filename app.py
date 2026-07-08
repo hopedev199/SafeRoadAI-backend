@@ -15,6 +15,7 @@ with app.app_context():
     db.create_all()
 
 def distance_km(lat1, lon1, lat2, lon2):
+
     """
     Approximate distance in kilometers.
     """
@@ -22,6 +23,20 @@ def distance_km(lat1, lon1, lat2, lon2):
         (lat1 - lat2) ** 2 +
         (lon1 - lon2) ** 2
     ) * 111
+
+def alert_level(distance, severity):
+
+    if severity == "High":
+        if distance < 0.2:
+            return "🔴 IMMEDIATE DANGER"
+        elif distance < 1:
+            return "🚨 DANGER AHEAD"
+
+    if severity == "Medium":
+        if distance < 1:
+            return "⚠️ WARNING"
+
+    return "ℹ️ NOTICE"
 
 @app.route("/")
 def home():
@@ -74,7 +89,7 @@ def nearby():
 
     nearby_incidents = []
 
-    for incident in Incident.query.all():
+    for incident in Incident.query.filter_by(active=True).all():
         d = distance_km(
             lat,
             lon,
@@ -85,6 +100,8 @@ def nearby():
         if d <= radius:
             item = incident.to_dict()
             item["distance_km"] = round(d, 2)
+            item["alert"] = alert_level(d, incident.severity)
+
             nearby_incidents.append(item)
 
     return jsonify(nearby_incidents)
