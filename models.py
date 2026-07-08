@@ -32,6 +32,8 @@ class Incident(db.Model):
     latitude = db.Column(db.Float, nullable=False)
     longitude = db.Column(db.Float, nullable=False)
     reporter = db.Column(db.String(100))
+    severity = db.Column(db.String(20), default="Medium")
+    active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
@@ -42,5 +44,7 @@ class Incident(db.Model):
             "latitude": self.latitude,
             "longitude": self.longitude,
             "reporter": self.reporter,
+            "severity": self.severity,
+            "active": self.active,
             "created_at": self.created_at.isoformat()
         }

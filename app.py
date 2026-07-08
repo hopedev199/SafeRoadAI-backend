@@ -41,7 +41,9 @@ def report_incident():
         description=data.get("description"),
         latitude=data["latitude"],
         longitude=data["longitude"],
-        reporter=data.get("reporter")
+        reporter=data.get("reporter"),
+        severity=data.get("severity", "Medium"),
+        active=True
     )
 
     db.session.add(incident)
