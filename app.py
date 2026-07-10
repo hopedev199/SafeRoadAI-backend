@@ -1,10 +1,13 @@
 import math
 
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, Incident, User
 
 app = Flask(__name__)
+
+CORS(app)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///saferoad.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -15,14 +18,33 @@ with app.app_context():
     db.create_all()
 
 def distance_km(lat1, lon1, lat2, lon2):
+    """
+    Accurate distance between two GPS coordinates.
+    Returns kilometers.
+    """
 
-    """
-    Approximate distance in kilometers.
-    """
-    return math.sqrt(
-        (lat1 - lat2) ** 2 +
-        (lon1 - lon2) ** 2
-    ) * 111
+    R = 6371
+
+    lat1 = math.radians(lat1)
+    lat2 = math.radians(lat2)
+
+    dlat = lat2 - lat1
+    dlon = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(dlat / 2) ** 2
+        +
+        math.cos(lat1)
+        * math.cos(lat2)
+        * math.sin(dlon / 2) ** 2
+    )
+
+    c = 2 * math.atan2(
+        math.sqrt(a),
+        math.sqrt(1 - a)
+    )
+
+    return R * c
 
 def alert_level(distance, severity):
 
@@ -103,6 +125,11 @@ def nearby():
             item["alert"] = alert_level(d, incident.severity)
 
             nearby_incidents.append(item)
+
+    # Closest danger appears first
+    nearby_incidents.sort(
+        key=lambda x: x["distance_km"]
+    )
 
     return jsonify(nearby_incidents)
 

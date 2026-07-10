@@ -1,0 +1,13 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.env
+
+# SQLite database
+instance/*.db
+
+# macOS/Linux editor files
+.DS_Store
