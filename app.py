@@ -5,6 +5,124 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, Incident, User
 
+def calculate_severity(incident_type):
+
+    critical = [
+        "Armed Robbery",
+        "Kidnapping",
+        "Terror Attack",
+        "Active Shooting",
+        "Security Threat",
+    ]
+
+    high = [
+        "Accident",
+        "Serious Accident",
+        "Roadblock",
+        "Flooding",
+        "Fire Outbreak",
+        "Bridge Collapse",
+        "Landslide",
+    ]
+
+    medium = [
+        "Traffic",
+        "Heavy Traffic",
+        "Broken Down Vehicle",
+        "Vehicle Breakdown",
+        "Protest",
+        "Bad Weather",
+    ]
+
+    low = [
+        "Pothole",
+        "Bad Road",
+        "Construction",
+        "Speed Bump",
+    ]
+
+    if incident_type in critical:
+        return "Critical"
+
+    if incident_type in high:
+        return "High"
+
+    if incident_type in medium:
+        return "Medium"
+
+    if incident_type in low:
+        return "Low"
+
+    return "Medium"
+
+
+from datetime import datetime
+
+
+def incident_lifetime_hours(incident_type):
+
+    lifetime = {
+        "Traffic": 2,
+        "Heavy Traffic": 2,
+
+        "Accident": 24,
+        "Serious Accident": 24,
+
+        "Roadblock": 24,
+
+        "Flooding": 48,
+        "Fire Outbreak": 48,
+
+        "Pothole": 2160,
+        "Bad Road": 2160,
+
+        "Security Threat": None,
+        "Armed Robbery": None,
+        "Kidnapping": None,
+        "Active Shooting": None,
+        "Terror Attack": None,
+    }
+
+    return lifetime.get(incident_type, 24)
+
+
+def is_incident_expired(incident):
+
+    lifetime = incident_lifetime_hours(
+        incident.incident_type
+    )
+
+    if lifetime is None:
+        return False
+
+    age_hours = (
+        datetime.utcnow() -
+        incident.created_at
+    ).total_seconds() / 3600
+
+    return age_hours >= lifetime
+
+def calculate_trust_score(incident):
+
+    score = 20
+
+    # Driver confirmations
+    score += min(
+        incident.verification_count * 10,
+        50
+    )
+
+    # Severity bonus
+    if incident.severity == "Critical":
+        score += 20
+    elif incident.severity == "High":
+        score += 15
+    elif incident.severity == "Medium":
+        score += 10
+    else:
+        score += 5
+
+    return min(score, 100)
 app = Flask(__name__)
 
 CORS(app)
@@ -48,15 +166,35 @@ def distance_km(lat1, lon1, lat2, lon2):
 
 def alert_level(distance, severity):
 
-    if severity == "High":
-        if distance < 0.2:
-            return "🔴 IMMEDIATE DANGER"
-        elif distance < 1:
-            return "🚨 DANGER AHEAD"
+    if severity == "Critical":
+        if distance <= 0.3:
+            return "🚨 EVACUATE OR TURN BACK IMMEDIATELY"
+        elif distance <= 1:
+            return "🚨 CRITICAL DANGER AHEAD"
+        elif distance <= 2:
+            return "⚠️ CRITICAL INCIDENT NEARBY"
+        return "⚠️ CRITICAL WARNING"
 
-    if severity == "Medium":
-        if distance < 1:
-            return "⚠️ WARNING"
+    elif severity == "High":
+        if distance <= 0.3:
+            return "🔴 IMMEDIATE DANGER"
+        elif distance <= 1:
+            return "🟠 HIGH RISK AHEAD"
+        elif distance <= 2:
+            return "⚠️ HIGH RISK AREA"
+        return "⚠️ HIGH RISK"
+
+    elif severity == "Medium":
+        if distance <= 0.5:
+            return "🟡 DRIVE WITH CAUTION"
+        elif distance <= 2:
+            return "⚠️ INCIDENT AHEAD"
+        return "⚠️ WARNING"
+
+    elif severity == "Low":
+        if distance <= 1:
+            return "🟢 STAY ALERT"
+        return "ℹ️ NOTICE"
 
     return "ℹ️ NOTICE"
 
@@ -79,7 +217,9 @@ def report_incident():
         latitude=data["latitude"],
         longitude=data["longitude"],
         reporter=data.get("reporter"),
-        severity=data.get("severity", "Medium"),
+        severity=calculate_severity(
+            data["incident_type"]
+        ),
         active=True
     )
 
@@ -112,6 +252,11 @@ def nearby():
     nearby_incidents = []
 
     for incident in Incident.query.filter_by(active=True).all():
+        if is_incident_expired(incident):
+            incident.active = False
+            db.session.commit()
+            continue
+
         d = distance_km(
             lat,
             lon,
@@ -123,6 +268,7 @@ def nearby():
             item = incident.to_dict()
             item["distance_km"] = round(d, 2)
             item["alert"] = alert_level(d, incident.severity)
+            item["trust_score"] = calculate_trust_score(incident)
 
             nearby_incidents.append(item)
 
@@ -181,6 +327,24 @@ def login():
         "user": user.to_dict()
     })
 
+@app.route("/confirm/<int:incident_id>", methods=["POST"])
+def confirm_incident(incident_id):
+
+    incident = Incident.query.get(incident_id)
+
+    if incident is None:
+        return jsonify({
+            "message": "Incident not found."
+        }), 404
+
+    incident.verification_count += 1
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Incident confirmed.",
+        "verification_count": incident.verification_count
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

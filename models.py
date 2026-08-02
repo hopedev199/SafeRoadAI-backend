@@ -34,8 +34,16 @@ class Incident(db.Model):
     reporter = db.Column(db.String(100))
     severity = db.Column(db.String(20), default="Medium")
     active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    verification_count = db.Column(
+        db.Integer,
+        default=1
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
     def to_dict(self):
         return {
             "id": self.id,
@@ -45,6 +53,7 @@ class Incident(db.Model):
             "longitude": self.longitude,
             "reporter": self.reporter,
             "severity": self.severity,
+            "verification_count": self.verification_count,
             "active": self.active,
             "created_at": self.created_at.isoformat()
         }
