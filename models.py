@@ -14,7 +14,18 @@ class User(db.Model):
 
     phone = db.Column(db.String(30))
 
+    trust_score = db.Column(
+        db.Integer,
+        default=50
+    )
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    incidents = db.relationship(
+        "Incident",
+        backref="user",
+        lazy=True
+    )
 
     def to_dict(self):
         return {
@@ -32,6 +43,10 @@ class Incident(db.Model):
     latitude = db.Column(db.Float, nullable=False)
     longitude = db.Column(db.Float, nullable=False)
     reporter = db.Column(db.String(100))
+    user_id = db.Column(
+    db.Integer,
+    db.ForeignKey("user.id")
+)
     severity = db.Column(db.String(20), default="Medium")
     active = db.Column(db.Boolean, default=True)
 
@@ -57,3 +72,27 @@ class Incident(db.Model):
             "active": self.active,
             "created_at": self.created_at.isoformat()
         }
+
+class IncidentConfirmation(db.Model):
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id"),
+        nullable=False
+    )
+
+    incident_id = db.Column(
+        db.Integer,
+        db.ForeignKey("incident.id"),
+        nullable=False
+    )
+
+    confirmed_at = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )

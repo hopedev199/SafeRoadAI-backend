@@ -3,7 +3,20 @@ import math
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, Incident, User
+from models import (
+    db,
+    Incident,
+    User,
+    IncidentConfirmation,
+)
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_jwt_extended import (
+    JWTManager,
+    create_access_token,
+    jwt_required,
+    get_jwt_identity
+)
 
 def calculate_severity(incident_type):
 
@@ -123,7 +136,31 @@ def calculate_trust_score(incident):
         score += 5
 
     return min(score, 100)
+
+def reputation_level(score):
+
+    if score >= 95:
+        return "🏆 Elite Road Guardian"
+
+    elif score >= 85:
+        return "🟣 Road Guardian"
+
+    elif score >= 70:
+        return "🔵 Verified Reporter"
+
+    elif score >= 50:
+        return "🟢 Trusted Driver"
+
+    return "🚗 New Driver"
 app = Flask(__name__)
+
+app.config["JWT_SECRET_KEY"] = "SafeRoadAI_Very_Long_Secret_Key_2026_Change_Me"
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 CORS(app)
 
@@ -207,6 +244,7 @@ def home():
     })
 
 @app.route("/report", methods=["POST"])
+@limiter.limit("10 per minute")
 def report_incident():
 
     data = request.get_json()
@@ -217,6 +255,7 @@ def report_incident():
         latitude=data["latitude"],
         longitude=data["longitude"],
         reporter=data.get("reporter"),
+        user_id=data.get("user_id"),
         severity=calculate_severity(
             data["incident_type"]
         ),
@@ -281,6 +320,7 @@ def nearby():
 
 
 @app.route("/register", methods=["POST"])
+@limiter.limit("3 per minute")
 def register():
 
     data = request.get_json()
@@ -310,6 +350,7 @@ def register():
 
 
 @app.route("/login", methods=["POST"])
+@limiter.limit("5 per minute")
 def login():
 
     data = request.get_json()
@@ -322,13 +363,27 @@ def login():
     if not check_password_hash(user.password, data["password"]):
         return jsonify({"error": "Invalid username or password"}), 401
 
+    access_token = create_access_token(
+        identity=str(user.id)
+    )
+
     return jsonify({
         "message": "Login successful",
+        "token": access_token,
         "user": user.to_dict()
     })
 
 @app.route("/confirm/<int:incident_id>", methods=["POST"])
 def confirm_incident(incident_id):
+
+    data = request.get_json()
+
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({
+            "message": "User ID is required."
+        }), 400
 
     incident = Incident.query.get(incident_id)
 
@@ -337,13 +392,69 @@ def confirm_incident(incident_id):
             "message": "Incident not found."
         }), 404
 
+    existing = IncidentConfirmation.query.filter_by(
+        user_id=user_id,
+        incident_id=incident_id
+    ).first()
+
+    if existing:
+        return jsonify({
+            "message": "You have already confirmed this incident."
+        }), 400
+
+    confirmation = IncidentConfirmation(
+        user_id=user_id,
+        incident_id=incident_id
+    )
+
+    db.session.add(confirmation)
+
     incident.verification_count += 1
+
+    if incident.user:
+        incident.user.trust_score = min(
+            incident.user.trust_score + 2,
+            100
+        )
 
     db.session.commit()
 
     return jsonify({
         "message": "Incident confirmed.",
         "verification_count": incident.verification_count
+    })
+
+@app.route("/user/<int:user_id>/stats")
+def user_stats(user_id):
+
+    user = User.query.get(user_id)
+
+    if user is None:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    reports = Incident.query.filter_by(
+        user_id=user_id
+    ).all()
+
+    reports_submitted = len(reports)
+
+    reports_confirmed = sum(
+        report.verification_count - 1
+        for report in reports
+    )
+
+    trust_score = user.trust_score
+
+    people_helped = reports_confirmed * 5
+
+    return jsonify({
+        "reports_submitted": reports_submitted,
+        "reports_confirmed": reports_confirmed,
+        "trust_score": trust_score,
+        "people_helped": people_helped,
+        "reputation": reputation_level(trust_score),
     })
 
 if __name__ == "__main__":
