@@ -156,6 +156,8 @@ app = Flask(__name__)
 
 app.config["JWT_SECRET_KEY"] = "SafeRoadAI_Very_Long_Secret_Key_2026_Change_Me"
 
+jwt = JWTManager(app)
+
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
