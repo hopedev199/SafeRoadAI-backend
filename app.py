@@ -246,10 +246,12 @@ def home():
     })
 
 @app.route("/report", methods=["POST"])
+@jwt_required()
 @limiter.limit("10 per minute")
 def report_incident():
 
     data = request.get_json()
+    user_id = int(get_jwt_identity())
 
     incident = Incident(
         incident_type=data["incident_type"],
@@ -257,7 +259,7 @@ def report_incident():
         latitude=data["latitude"],
         longitude=data["longitude"],
         reporter=data.get("reporter"),
-        user_id=data.get("user_id"),
+        user_id=user_id,
         severity=calculate_severity(
             data["incident_type"]
         ),
@@ -376,11 +378,10 @@ def login():
     })
 
 @app.route("/confirm/<int:incident_id>", methods=["POST"])
+@jwt_required()
 def confirm_incident(incident_id):
 
-    data = request.get_json()
-
-    user_id = data.get("user_id")
+    user_id = int(get_jwt_identity())
 
     if not user_id:
         return jsonify({
