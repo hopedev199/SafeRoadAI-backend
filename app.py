@@ -1,4 +1,9 @@
+import os
+from pathlib import Path
 import math
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / '.env')
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -8,6 +13,9 @@ from models import (
     Incident,
     User,
     IncidentConfirmation,
+    AuditLog,
+    EmergencyContact,
+    SOSEvent,
 )
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -137,6 +145,88 @@ def calculate_trust_score(incident):
 
     return min(score, 100)
 
+from functools import wraps
+
+from functools import wraps
+
+def get_current_user():
+    user_id = int(get_jwt_identity())
+
+    user = User.query.get(user_id)
+
+    if not user:
+        return None, jsonify({
+            "error": "User not found"
+        }), 404
+
+    if user.is_suspended:
+        return None, jsonify({
+            "error": "Account suspended"
+        }), 403
+
+    return user, None, None
+
+
+def active_user_required(fn):
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+
+        user, error_response, status_code = get_current_user()
+
+        if error_response:
+            return error_response, status_code
+
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def admin_required(fn):
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+
+        user, error_response, status_code = get_current_user()
+
+        if error_response:
+            return error_response, status_code
+
+        if user.role != "ADMIN":
+            return jsonify({
+                "error": "Administrator access required"
+            }), 403
+
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def incident_resolver_required(fn):
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+
+        user, error_response, status_code = get_current_user()
+
+        if error_response:
+            return error_response, status_code
+
+        allowed_roles = [
+            "ROAD_OFFICER",
+            "EMERGENCY",
+            "ADMIN"
+        ]
+
+        if user.role not in allowed_roles:
+            return jsonify({
+                "error": "Incident resolution access required"
+            }), 403
+
+        return fn(*args, **kwargs)
+
+    return wrapper
+
 def reputation_level(score):
 
     if score >= 95:
@@ -166,13 +256,31 @@ limiter = Limiter(
 
 CORS(app)
 
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///saferoad.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db.init_app(app)
 
 with app.app_context():
     db.create_all()
+
+def create_audit_log(
+    user_id,
+    action,
+    target_type=None,
+    target_id=None,
+    details=None
+):
+    log = AuditLog(
+        user_id=user_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        details=details
+    )
+
+    db.session.add(log)
+    db.session.commit()
 
 def distance_km(lat1, lon1, lat2, lon2):
     """
@@ -237,6 +345,208 @@ def alert_level(distance, severity):
 
     return "ℹ️ NOTICE"
 
+@app.route("/admin/users")
+@admin_required
+def admin_users():
+
+    users = User.query.all()
+
+    return jsonify([
+        user.to_dict() for user in users
+    ])
+
+@app.route("/admin/promote/<int:user_id>", methods=["POST"])
+@admin_required
+def promote_user(user_id):
+
+    data = request.get_json()
+
+    role = data.get("role")
+
+    allowed_roles = [
+        "DRIVER",
+        "ROAD_OFFICER",
+        "EMERGENCY",
+        "ADMIN"
+    ]
+
+    if role not in allowed_roles:
+        return jsonify({
+            "error": "Invalid role"
+        }), 400
+
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    user.role = role
+
+    db.session.commit()
+
+    create_audit_log(
+        user_id=get_jwt_identity(),
+        action="PROMOTED_USER",
+        target_type="USER",
+        target_id=user.id,
+        details=f"Changed role of {user.username} to {role}"
+    )
+
+    return jsonify({
+        "message": "User promoted successfully",
+        "user": user.to_dict()
+    })
+
+@app.route("/admin/suspend/<int:user_id>", methods=["POST"])
+@admin_required
+def suspend_user(user_id):
+
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    if user.is_suspended:
+        return jsonify({
+            "message": "User is already suspended"
+        }), 400
+
+    # Prevent an admin from suspending themselves
+    current_admin_id = int(get_jwt_identity())
+
+    if user.id == current_admin_id:
+        return jsonify({
+            "error": "You cannot suspend your own account"
+        }), 400
+
+    user.is_suspended = True
+
+    db.session.commit()
+
+    create_audit_log(
+        user_id=current_admin_id,
+        action="SUSPENDED_USER",
+        target_type="USER",
+        target_id=user.id,
+        details=f"Suspended user {user.username}"
+    )
+
+    return jsonify({
+        "message": "User suspended successfully",
+        "user": user.to_dict()
+    })
+
+@app.route("/admin/unsuspend/<int:user_id>", methods=["POST"])
+@admin_required
+def unsuspend_user(user_id):
+
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    if not user.is_suspended:
+        return jsonify({
+            "message": "User is not suspended"
+        }), 400
+
+    current_admin_id = int(get_jwt_identity())
+
+    user.is_suspended = False
+
+    db.session.commit()
+
+    create_audit_log(
+        user_id=current_admin_id,
+        action="UNSUSPENDED_USER",
+        target_type="USER",
+        target_id=user.id,
+        details=f"Unsuspended user {user.username}"
+    )
+
+    return jsonify({
+        "message": "User unsuspended successfully",
+        "user": user.to_dict()
+    }), 200
+
+@app.route("/admin/audit-logs", methods=["GET"])
+@admin_required
+def get_audit_logs():
+
+    try:
+        page = int(request.args.get("page", 1))
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "Invalid page or limit"
+        }), 400
+
+    if page < 1:
+        return jsonify({
+            "error": "Page must be 1 or greater"
+        }), 400
+
+    # Keep each request bounded
+    limit = max(1, min(limit, 100))
+
+    query = AuditLog.query
+
+    action = request.args.get("action")
+    target_type = request.args.get("target_type")
+    user_id = request.args.get("user_id")
+
+    if action:
+        query = query.filter(
+            AuditLog.action == action
+        )
+
+    if target_type:
+        query = query.filter(
+            AuditLog.target_type == target_type
+        )
+
+    if user_id:
+        try:
+            user_id = int(user_id)
+        except ValueError:
+            return jsonify({
+                "error": "Invalid user_id"
+            }), 400
+
+        query = query.filter(
+            AuditLog.user_id == user_id
+        )
+
+    query = query.order_by(
+            AuditLog.id.desc()
+    )
+
+    total = query.count()
+
+    logs = query.offset(
+        (page - 1) * limit
+    ).limit(limit).all()
+
+    return jsonify({
+        "page": page,
+        "limit": limit,
+        "count": len(logs),
+        "total": total,
+        "total_pages": (
+            (total + limit - 1) // limit
+        ),
+        "logs": [
+            log.to_dict()
+            for log in logs
+        ]
+    }), 200
+
 @app.route("/")
 def home():
     return jsonify({
@@ -246,7 +556,7 @@ def home():
     })
 
 @app.route("/report", methods=["POST"])
-@jwt_required()
+@active_user_required
 @limiter.limit("10 per minute")
 def report_incident():
 
@@ -274,6 +584,56 @@ def report_incident():
         "incident": incident.to_dict()
     }), 201
 
+
+@app.route("/resolve/<int:incident_id>", methods=["POST"])
+@incident_resolver_required
+def resolve_incident(incident_id):
+
+    user_id = int(get_jwt_identity())
+
+    incident = Incident.query.get(incident_id)
+
+    if not incident:
+        return jsonify({
+            "error": "Incident not found"
+        }), 404
+
+    if incident.status == "RESOLVED":
+        return jsonify({
+            "error": "Incident already resolved"
+        }), 400
+
+    data = request.get_json() or {}
+
+    resolution_note = data.get(
+        "resolution_note",
+        "Incident resolved by authorized personnel"
+    )
+
+    incident.status = "RESOLVED"
+    incident.active = False
+    incident.resolved_at = datetime.utcnow()
+    incident.resolved_by = user_id
+    incident.resolution_note = resolution_note
+
+    audit = AuditLog(
+        user_id=user_id,
+        action="RESOLVED_INCIDENT",
+        target_type="INCIDENT",
+        target_id=incident.id,
+        details=(
+            "Incident resolved by authorized personnel. "
+            f"Note: {resolution_note}"
+        )
+    )
+
+    db.session.add(audit)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Incident resolved successfully",
+        "incident": incident.to_dict()
+    }), 200
 
 @app.route("/incidents")
 def incidents():
@@ -362,10 +722,19 @@ def login():
     user = User.query.filter_by(username=data["username"]).first()
 
     if not user:
+        app.logger.warning("LOGIN DEBUG: USER NOT FOUND")
         return jsonify({"error": "Invalid username or password"}), 401
 
     if not check_password_hash(user.password, data["password"]):
+        app.logger.warning("LOGIN DEBUG: PASSWORD CHECK FAILED")
         return jsonify({"error": "Invalid username or password"}), 401
+
+    app.logger.info("LOGIN DEBUG: PASSWORD CHECK PASSED") 
+
+    if user.is_suspended:
+        return jsonify({
+            "error": "Account suspended"
+        }), 403
 
     access_token = create_access_token(
         identity=str(user.id)
@@ -378,7 +747,7 @@ def login():
     })
 
 @app.route("/confirm/<int:incident_id>", methods=["POST"])
-@jwt_required()
+@active_user_required
 def confirm_incident(incident_id):
 
     user_id = int(get_jwt_identity())
@@ -412,7 +781,34 @@ def confirm_incident(incident_id):
 
     db.session.add(confirmation)
 
-    incident.verification_count += 1
+    user = User.query.get(user_id)
+
+    if user.role == "DRIVER":
+        incident.verification_count += 1
+
+    elif user.role == "ROAD_OFFICER":
+        incident.verification_count += 5
+        incident.officially_verified = True
+
+        create_audit_log(
+            user_id=user_id,
+    action="OFFICIALLY_VERIFIED_INCIDENT",
+            target_type="INCIDENT",
+            target_id=incident.id,
+            details="Incident officially verified by ROAD_OFFICER"
+        )
+
+    elif user.role == "ADMIN":
+        incident.verification_count += 10
+        incident.officially_verified = True
+
+        create_audit_log(
+            user_id=user_id,
+    action="OFFICIALLY_VERIFIED_INCIDENT",
+            target_type="INCIDENT",
+            target_id=incident.id,
+            details="Incident officially verified by ADMIN"
+        )
 
     if incident.user:
         incident.user.trust_score = min(
@@ -424,7 +820,8 @@ def confirm_incident(incident_id):
 
     return jsonify({
         "message": "Incident confirmed.",
-        "verification_count": incident.verification_count
+        "verification_count": incident.verification_count,
+        "officially_verified": incident.officially_verified
     })
 
 @app.route("/user/<int:user_id>/stats")
@@ -459,6 +856,379 @@ def user_stats(user_id):
         "people_helped": people_helped,
         "reputation": reputation_level(trust_score),
     })
+
+@app.route("/emergency-contacts", methods=["GET"])
+@active_user_required
+def get_emergency_contacts():
+    user_id = int(get_jwt_identity())
+
+    contacts = EmergencyContact.query.filter_by(
+        user_id=user_id
+    ).order_by(
+        EmergencyContact.is_primary.desc(),
+        EmergencyContact.id.asc()
+    ).all()
+
+    return jsonify([
+        contact.to_dict()
+        for contact in contacts
+    ]), 200
+
+
+@app.route("/emergency-contacts", methods=["POST"])
+@active_user_required
+def add_emergency_contact():
+    user_id = int(get_jwt_identity())
+
+    data = request.get_json() or {}
+
+    name = data.get("name")
+    phone = data.get("phone")
+    relationship = data.get("relationship")
+    is_primary = data.get("is_primary", False)
+
+    if not name or not phone:
+        return jsonify({
+            "error": "Name and phone are required"
+        }), 400
+
+    # Allow only one primary contact per user.
+    if is_primary:
+        EmergencyContact.query.filter_by(
+            user_id=user_id,
+            is_primary=True
+        ).update({
+            "is_primary": False
+        })
+
+    contact = EmergencyContact(
+        user_id=user_id,
+        name=name,
+        phone=phone,
+        relationship=relationship,
+        is_primary=bool(is_primary)
+    )
+
+    db.session.add(contact)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Emergency contact added successfully",
+        "contact": contact.to_dict()
+    }), 201
+
+
+@app.route("/emergency-contacts/<int:contact_id>", methods=["PUT"])
+@active_user_required
+def update_emergency_contact(contact_id):
+    user_id = int(get_jwt_identity())
+
+    contact = EmergencyContact.query.filter_by(
+        id=contact_id,
+        user_id=user_id
+    ).first()
+
+    if not contact:
+        return jsonify({
+            "error": "Emergency contact not found"
+        }), 404
+
+    data = request.get_json() or {}
+
+    name = data.get("name")
+    phone = data.get("phone")
+    relationship = data.get("relationship")
+
+    if name is not None:
+        name = str(name).strip()
+        if not name:
+            return jsonify({
+                "error": "Name cannot be empty"
+            }), 400
+        contact.name = name
+
+    if phone is not None:
+        phone = str(phone).strip()
+        if not phone:
+            return jsonify({
+                "error": "Phone cannot be empty"
+            }), 400
+        contact.phone = phone
+
+    if relationship is not None:
+        contact.relationship = relationship
+
+    if "is_primary" in data:
+        is_primary = bool(data["is_primary"])
+
+        if is_primary:
+            EmergencyContact.query.filter(
+                EmergencyContact.user_id == user_id,
+                EmergencyContact.id != contact.id,
+                EmergencyContact.is_primary == True
+            ).update({
+                "is_primary": False
+            })
+
+        contact.is_primary = is_primary
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Emergency contact updated successfully",
+        "contact": contact.to_dict()
+    }), 200
+
+
+@app.route("/emergency-contacts/<int:contact_id>", methods=["DELETE"])
+@active_user_required
+def delete_emergency_contact(contact_id):
+    user_id = int(get_jwt_identity())
+
+    contact = EmergencyContact.query.filter_by(
+        id=contact_id,
+        user_id=user_id
+    ).first()
+
+    if not contact:
+        return jsonify({
+            "error": "Emergency contact not found"
+        }), 404
+
+    db.session.delete(contact)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Emergency contact deleted successfully"
+    }), 200
+
+
+# ============================================================
+# SOS EMERGENCY SYSTEM
+# ============================================================
+
+@app.route("/sos/trigger", methods=["POST"])
+@active_user_required
+def trigger_sos():
+    user_id = int(get_jwt_identity())
+
+    data = request.get_json() or {}
+
+    latitude = data.get("latitude")
+    longitude = data.get("longitude")
+    emergency_type = data.get("emergency_type", "GENERAL")
+    message = data.get("message")
+
+    # Validate GPS coordinates
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "Valid latitude and longitude are required"
+        }), 400
+
+    if not (-90 <= latitude <= 90):
+        return jsonify({
+            "error": "Latitude must be between -90 and 90"
+        }), 400
+
+    if not (-180 <= longitude <= 180):
+        return jsonify({
+            "error": "Longitude must be between -180 and 180"
+        }), 400
+
+    emergency_type = str(emergency_type).strip().upper()
+
+    allowed_types = [
+        "GENERAL",
+        "ACCIDENT",
+        "MEDICAL",
+        "FIRE",
+        "SECURITY",
+        "BREAKDOWN"
+    ]
+
+    if emergency_type not in allowed_types:
+        return jsonify({
+            "error": "Invalid emergency type",
+            "allowed_types": allowed_types
+        }), 400
+
+    if message is not None:
+        message = str(message).strip()
+
+        if len(message) > 500:
+            return jsonify({
+                "error": "Message cannot exceed 500 characters"
+            }), 400
+
+        if not message:
+            message = None
+
+    # Prevent accidental duplicate active SOS events
+    existing_sos = SOSEvent.query.filter_by(
+        user_id=user_id,
+        status="ACTIVE"
+    ).first()
+
+    if existing_sos:
+        return jsonify({
+            "error": "You already have an active SOS",
+            "sos": existing_sos.to_dict()
+        }), 409
+
+    sos = SOSEvent(
+        user_id=user_id,
+        latitude=latitude,
+        longitude=longitude,
+        emergency_type=emergency_type,
+        message=message,
+        status="ACTIVE"
+    )
+
+    db.session.add(sos)
+    db.session.commit()
+
+    create_audit_log(
+        user_id=user_id,
+        action="SOS_TRIGGERED",
+        target_type="SOS",
+        target_id=sos.id,
+        details=f"SOS triggered: {emergency_type}"
+    )
+
+    return jsonify({
+        "message": "SOS triggered successfully",
+        "sos": sos.to_dict()
+    }), 201
+
+# ============================================================
+# ACTIVE SOS STATUS
+# ============================================================
+
+@app.route("/sos/active", methods=["GET"])
+@active_user_required
+def get_active_sos():
+    user_id = int(get_jwt_identity())
+
+    sos = SOSEvent.query.filter_by(
+        user_id=user_id,
+        status="ACTIVE"
+    ).order_by(SOSEvent.created_at.desc()).first()
+
+    if not sos:
+        return jsonify({
+            "active": False,
+            "sos": None
+        }), 200
+
+    return jsonify({
+        "active": True,
+        "sos": sos.to_dict()
+    }), 200
+
+
+# ============================================================
+# SOS CANCELLATION
+# ============================================================
+
+@app.route("/sos/cancel/<int:sos_id>", methods=["POST"])
+@active_user_required
+def cancel_sos(sos_id):
+    user_id = int(get_jwt_identity())
+
+    sos = SOSEvent.query.filter_by(
+        id=sos_id,
+        user_id=user_id
+    ).first()
+
+    if not sos:
+        return jsonify({
+            "error": "SOS event not found"
+        }), 404
+
+    if sos.status != "ACTIVE":
+        return jsonify({
+            "error": "SOS is not active",
+            "status": sos.status,
+            "sos": sos.to_dict()
+        }), 409
+
+    sos.status = "CANCELLED"
+    sos.cancelled_at = datetime.utcnow()
+
+    db.session.commit()
+
+    create_audit_log(
+        user_id=user_id,
+        action="SOS_CANCELLED",
+        target_type="SOS",
+        target_id=sos.id,
+        details="SOS cancelled by user"
+    )
+
+    return jsonify({
+        "message": "SOS cancelled successfully",
+        "sos": sos.to_dict()
+    }), 200
+
+
+# ============================================================
+# SOS RESOLUTION
+# ============================================================
+
+@app.route("/sos/resolve/<int:sos_id>", methods=["POST"])
+@incident_resolver_required
+def resolve_sos(sos_id):
+    current_user_id = int(get_jwt_identity())
+
+    sos = SOSEvent.query.get(sos_id)
+
+    if not sos:
+        return jsonify({
+            "error": "SOS event not found"
+        }), 404
+
+    if sos.status != "ACTIVE":
+        return jsonify({
+            "error": "SOS is not active",
+            "status": sos.status
+        }), 409
+
+    data = request.get_json() or {}
+    resolution_note = data.get("resolution_note")
+
+    if resolution_note is not None:
+        resolution_note = str(resolution_note).strip()
+
+        if len(resolution_note) > 500:
+            return jsonify({
+                "error": "Resolution note cannot exceed 500 characters"
+            }), 400
+
+        if not resolution_note:
+            resolution_note = None
+
+    sos.status = "RESOLVED"
+    sos.resolved_at = datetime.utcnow()
+    sos.resolved_by = current_user_id
+
+    db.session.commit()
+
+    create_audit_log(
+        user_id=current_user_id,
+        action="SOS_RESOLVED",
+        target_type="SOS",
+        target_id=sos.id,
+        details="SOS resolved by authorized responder"
+    )
+
+    return jsonify({
+        "message": "SOS resolved successfully",
+        "sos": sos.to_dict()
+    }), 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
