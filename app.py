@@ -824,6 +824,44 @@ def confirm_incident(incident_id):
         "officially_verified": incident.officially_verified
     })
 
+@app.route("/my-reports", methods=["GET"])
+@jwt_required()
+def my_reports():
+
+    user_id = int(get_jwt_identity())
+
+    reports = Incident.query.filter_by(
+        user_id=user_id
+    ).order_by(
+        Incident.created_at.desc()
+    ).all()
+
+    return jsonify([
+        report.to_dict()
+        for report in reports
+    ]), 200
+
+@app.route("/user/<int:user_id>/reports", methods=["GET"])
+def user_reports(user_id):
+
+    user = User.query.get(user_id)
+
+    if user is None:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    reports = Incident.query.filter_by(
+        user_id=user_id
+    ).order_by(
+        Incident.created_at.desc()
+    ).all()
+
+    return jsonify([
+        report.to_dict()
+        for report in reports
+    ]), 200
+
 @app.route("/user/<int:user_id>/stats")
 def user_stats(user_id):
 
