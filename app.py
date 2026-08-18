@@ -746,6 +746,46 @@ def login():
         "user": user.to_dict()
     })
 
+@app.route("/profile", methods=["PUT"])
+@jwt_required()
+def update_profile():
+
+    user_id = int(get_jwt_identity())
+
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    data = request.get_json()
+
+    username = data.get("username")
+    phone = data.get("phone")
+
+    if username:
+        existing_user = User.query.filter_by(
+            username=username
+        ).first()
+
+        if existing_user and existing_user.id != user.id:
+            return jsonify({
+                "error": "Username already exists"
+            }), 400
+
+        user.username = username
+
+    if phone:
+        user.phone = phone
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Profile updated successfully",
+        "user": user.to_dict()
+    }), 200
+
 @app.route("/confirm/<int:incident_id>", methods=["POST"])
 @active_user_required
 def confirm_incident(incident_id):
