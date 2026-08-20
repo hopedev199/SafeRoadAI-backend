@@ -27,3 +27,4 @@ wrapt==2.3.0
 gunicorn
 python-dotenv
 psycopg[binary]
+supabase==2.31.0
