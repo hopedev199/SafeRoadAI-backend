@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import math
+import uuid
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / '.env')
@@ -257,6 +258,8 @@ def reputation_level(score):
 
     return "🚗 New Driver"
 app = Flask(__name__)
+
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 app.config["JWT_SECRET_KEY"] = "SafeRoadAI_Very_Long_Secret_Key_2026_Change_Me"
 
@@ -799,6 +802,88 @@ def update_profile():
         "message": "Profile updated successfully",
         "user": user.to_dict()
     }), 200
+
+@app.route("/profile-picture", methods=["POST"])
+@jwt_required()
+def upload_profile_picture():
+
+    user_id = int(get_jwt_identity())
+
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    image = request.files.get("image")
+
+    if not image:
+        return jsonify({
+            "error": "Image file is required"
+        }), 400
+
+    if not image.filename:
+        return jsonify({
+            "error": "Invalid image filename"
+        }), 400
+
+    allowed_types = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }
+
+    content_type = image.content_type
+
+    if content_type not in allowed_types:
+        return jsonify({
+            "error": "Only JPG, PNG, and WebP images are allowed"
+        }), 400
+
+    extension = allowed_types[content_type]
+
+    filename = (
+        f"user-{user.id}/"
+        f"{uuid.uuid4().hex}{extension}"
+    )
+
+    file_bytes = image.read()
+
+    try:
+        supabase.storage.from_("profile-pictures").upload(
+            filename,
+            file_bytes,
+            {
+                "content-type": content_type,
+                "upsert": False,
+            }
+        )
+
+        public_url = supabase.storage.from_(
+            "profile-pictures"
+        ).get_public_url(filename)
+
+        user.profile_picture = public_url
+
+        db.session.commit()
+
+        return jsonify({
+            "message": "Profile picture uploaded successfully",
+            "profile_picture": public_url,
+            "user": user.to_dict()
+        }), 200
+
+    except Exception as error:
+        db.session.rollback()
+
+        app.logger.exception(
+            "PROFILE PICTURE UPLOAD ERROR"
+        )
+
+        return jsonify({
+            "error": "Could not upload profile picture"
+        }), 500
 
 @app.route("/change-password", methods=["PUT"])
 @jwt_required()

@@ -14,6 +14,10 @@ class User(db.Model):
 
     phone = db.Column(db.String(30))
 
+    profile_picture = db.Column(
+        db.String(500)
+    )
+
     role = db.Column(
         db.String(20),
         default="DRIVER"
@@ -44,6 +48,7 @@ class User(db.Model):
            "username": self.username,
            "email": self.email,
            "phone": self.phone,
+           "profile_picture": self.profile_picture,
            "role": self.role,
            "trust_score": self.trust_score,
            "is_suspended": self.is_suspended,
