@@ -25,6 +25,20 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity
 )
+from supabase import create_client
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
+
+if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+    raise RuntimeError(
+        "SUPABASE_URL and SUPABASE_SECRET_KEY must be configured"
+    )
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_SECRET_KEY
+)
 
 def calculate_severity(incident_type):
 
