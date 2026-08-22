@@ -41,6 +41,21 @@ supabase = create_client(
     SUPABASE_SECRET_KEY
 )
 
+print(
+    "SUPABASE ENV CHECK:",
+    {
+        "url_present": bool(SUPABASE_URL),
+        "url_ascii": SUPABASE_URL.isascii() if SUPABASE_URL else None,
+        "key_present": bool(SUPABASE_SECRET_KEY),
+        "key_ascii": SUPABASE_SECRET_KEY.isascii()
+        if SUPABASE_SECRET_KEY else None,
+        "url_length": len(SUPABASE_URL)
+        if SUPABASE_URL else None,
+        "key_length": len(SUPABASE_SECRET_KEY)
+        if SUPABASE_SECRET_KEY else None,
+    }
+)
+
 def calculate_severity(incident_type):
 
     critical = [
